@@ -29,8 +29,8 @@ LANGUAGE LANG_NEUTRAL, SUBLANG_DEFAULT
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,1,0,0
- PRODUCTVERSION 1,1,0,0
+ FILEVERSION 1,3,0,0
+ PRODUCTVERSION 1,3,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -47,12 +47,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "khudob.in"
             VALUE "FileDescription", "OLED-oriented dimming utility"
-            VALUE "FileVersion", "1.1.0.0"
+            VALUE "FileVersion", "1.3.0.0"
             VALUE "InternalName", "oledSaverWin.exe"
             VALUE "LegalCopyright", "Copyright (C) 2024-2025 khudob.in"
             VALUE "OriginalFilename", "oledSaverWin.exe"
             VALUE "ProductName", "oledSaverWin"
-            VALUE "ProductVersion", "1.1.0.0"
+            VALUE "ProductVersion", "1.3.0.0"
         END
     END
     BLOCK "VarFileInfo"

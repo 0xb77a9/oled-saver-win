@@ -14,8 +14,8 @@ Here are the key controls and interactions within the application:
 - **Double-click**: Toggles fullscreen mode on and off.
 - **Escape (Esc)**: Exits fullscreen, next press hides application to the taskbar.
 - **Dragging with Mouse**: Allows you to move the overlay window when not in fullscreen mode.
-- **Resizing with Mouse**: Hold down SHIFT or CONTROL keys to resize window in order to cover specific areas of the screen when not in fullscreen mode.
-- **Alt+F4**: To close utility
+- **Resizing with Mouse**: Hold down SHIFT or CONTROL keys to resize window in order to cover specific areas of the screen when not in fullscreen mode. Mouse middle button works too.
+- **Alt+F4**: To close utility.
 
 Hint: pin that utility to taskbar, and start it with Win+Number shortcut.
 
