@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    var cflags = std.ArrayList([]const u8).init(b.allocator);
+    var cflags = std.array_list.Managed([]const u8).init(b.allocator);
     cflags.appendSlice(&.{
         "-D_UNICODE",
         "-DUNICODE",
@@ -17,9 +17,11 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "oledSaverWin",
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
     });
     exe.subsystem = .Windows;
     //    exe.linkLibCpp();
