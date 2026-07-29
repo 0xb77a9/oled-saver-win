@@ -25,16 +25,18 @@ pub fn build(b: *std.Build) void {
     });
     exe.subsystem = .Windows;
     //    exe.linkLibCpp();
-    exe.linkSystemLibrary("user32");
-    exe.linkSystemLibrary("gdi32");
+    exe.root_module.linkSystemLibrary("user32", .{});
+    exe.root_module.linkSystemLibrary("gdi32", .{});
+    exe.root_module.linkSystemLibrary("advapi32", .{});
+    exe.root_module.linkSystemLibrary("shell32", .{});
 
-    exe.addCSourceFiles(.{
+    exe.root_module.addCSourceFiles(.{
         .files = &.{
             "oledSaverWin.cpp",
         },
         .flags = cflags.items,
     });
-    exe.addWin32ResourceFile(.{
+    exe.root_module.addWin32ResourceFile(.{
         .file = b.path("oledSaverWin.rc"),
         .flags = &.{ "/D_UNICODE", "/DUNICODE" },
     });

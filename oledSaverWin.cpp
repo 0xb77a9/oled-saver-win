@@ -14,6 +14,7 @@
 
 //  Windows Header Files:
 #include <windows.h>
+#include <shellapi.h>
 
 #include "resource.h"
 
@@ -33,6 +34,8 @@ static LPCWSTR szWindowTitle = L"oledSaverWin";
 static const int nAlphaValue = 240;
 static const int nIdOffTimer = 42;
 static const int nIdNoSleepTimer = 43;
+static const int nIdIdleTimer = 44;
+NOTIFYICONDATA nid = {};
 
 struct OledSaverWinState
 {
@@ -45,7 +48,70 @@ struct OledSaverWinState
 	POINT windowStartPos{};
 	POINT windowStartSize{};
 	int offTimeout{0};
+	int idleTimeoutSeconds{300};
+	int dimPercentage{95};
+	bool autostart{false};
+	POINT lastMousePos{};
 };
+
+void LoadSettings(OledSaverWinState* state) {
+	HKEY hKey;
+	if (RegCreateKeyEx(HKEY_CURRENT_USER, L"Software\\oledSaverWin", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+		DWORD dataSize = sizeof(DWORD);
+		DWORD value;
+		if (RegGetValue(hKey, NULL, L"IdleTimeoutSeconds", RRF_RT_REG_DWORD, NULL, &value, &dataSize) == ERROR_SUCCESS) {
+			state->idleTimeoutSeconds = value;
+		}
+		if (RegGetValue(hKey, NULL, L"DimPercentage", RRF_RT_REG_DWORD, NULL, &value, &dataSize) == ERROR_SUCCESS) {
+			state->dimPercentage = value;
+		}
+		RegCloseKey(hKey);
+	}
+}
+
+bool CheckAutostart() {
+	HKEY hKey;
+	bool autostart = false;
+	if (RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+		if (RegQueryValueEx(hKey, L"oledSaverWin", NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
+			autostart = true;
+		}
+		RegCloseKey(hKey);
+	}
+	return autostart;
+}
+
+void UpdateAutostart(bool enable) {
+	HKEY hKey;
+	if (RegCreateKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+		if (enable) {
+			wchar_t exePath[MAX_PATH];
+			GetModuleFileName(NULL, exePath, MAX_PATH);
+			RegSetValueEx(hKey, L"oledSaverWin", 0, REG_SZ, (const BYTE*)exePath, (DWORD)((wcslen(exePath) + 1) * sizeof(wchar_t)));
+		} else {
+			RegDeleteValue(hKey, L"oledSaverWin");
+		}
+		RegCloseKey(hKey);
+	}
+}
+
+void SaveSettings(OledSaverWinState* state) {
+	HKEY hKey;
+	if (RegCreateKeyEx(HKEY_CURRENT_USER, L"Software\\oledSaverWin", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+		DWORD value = state->idleTimeoutSeconds;
+		RegSetValueEx(hKey, L"IdleTimeoutSeconds", 0, REG_DWORD, (const BYTE*)&value, sizeof(DWORD));
+		value = state->dimPercentage;
+		RegSetValueEx(hKey, L"DimPercentage", 0, REG_DWORD, (const BYTE*)&value, sizeof(DWORD));
+		RegCloseKey(hKey);
+	}
+}
+
+void ApplyDimSettings(HWND hWnd, OledSaverWinState* state) {
+	int alpha = 255 - (state->dimPercentage * 255 / 100);
+	if (alpha < 0) alpha = 0;
+	if (alpha > 255) alpha = 255;
+	SetLayeredWindowAttributes(hWnd, 0, alpha, LWA_ALPHA);
+}
 
 // Forward declarations of functions included in this code module:
 ATOM MyRegisterClass(HINSTANCE hInstance);
@@ -118,7 +184,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow, OledSaverWinState *pWindowS
 
 	hInst = hInstance; // Store instance handle in our global variable
 
-	hWnd = CreateWindowEx(WS_EX_LAYERED | WS_EX_APPWINDOW, szWindowClass, szWindowTitle, WS_POPUP,
+	LoadSettings(pWindowState);
+	pWindowState->autostart = CheckAutostart();
+
+	hWnd = CreateWindowEx(WS_EX_LAYERED | WS_EX_TOOLWINDOW, szWindowClass, szWindowTitle, WS_POPUP,
 						  CW_USEDEFAULT, CW_USEDEFAULT, 600, 400, NULL, NULL, hInstance, NULL);
 
 	if (!hWnd)
@@ -126,11 +195,20 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow, OledSaverWinState *pWindowS
 
 	SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pWindowState);
 
-	SetLayeredWindowAttributes(hWnd, 0, nAlphaValue, LWA_ALPHA);
-	ShowWindow(hWnd, nCmdShow);
+	ApplyDimSettings(hWnd, pWindowState);
+	ShowWindow(hWnd, SW_HIDE);
 	UpdateWindow(hWnd);
 
-	//	FullscreenHandler(hWnd, VK_RETURN);	// emulate enter hit
+	nid.cbSize = sizeof(NOTIFYICONDATA);
+	nid.hWnd = hWnd;
+	nid.uID = 1;
+	nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+	nid.uCallbackMessage = WM_TRAYICON;
+	nid.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_OLEDSAVERWIN));
+	wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"OLED Saver");
+	Shell_NotifyIcon(NIM_ADD, &nid);
+
+	SetTimer(hWnd, nIdIdleTimer, 1000, NULL);
 
 	DWORD style = GetWindowLong(hWnd, GWL_STYLE);
 	SetWindowLong(hWnd, GWL_STYLE, style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
@@ -258,7 +336,7 @@ eEventHandled FullscreenHandler(HWND hwnd, WPARAM wParam)
 	{
 		SetTimer(hwnd, nIdOffTimer, delaySeconds * 1000, NULL);
 		if (!me->isFullscreen)
-			ShowWindow(hwnd, SW_MINIMIZE);
+			ShowWindow(hwnd, SW_HIDE);
 		return eehHandled;
 	}
 
@@ -269,7 +347,7 @@ eEventHandled FullscreenHandler(HWND hwnd, WPARAM wParam)
 	if ((VK_ESCAPE == wParam) && (!me->isFullscreen))
 	{
 		// if not full screen, then minimize window to taskbar
-		ShowWindow(hwnd, SW_MINIMIZE);
+		ShowWindow(hwnd, SW_HIDE);
 		return eehHandled;
 	}
 
@@ -280,7 +358,7 @@ eEventHandled FullscreenHandler(HWND hwnd, WPARAM wParam)
 		if (!GetWindowPlacement(hwnd, &me->wpPrev) || !GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi))
 			return eehHandled;
 
-		SetWindowPos(hwnd, HWND_TOP,
+		SetWindowPos(hwnd, HWND_TOPMOST,
 					 mi.rcMonitor.left, mi.rcMonitor.top,
 					 mi.rcMonitor.right - mi.rcMonitor.left,
 					 mi.rcMonitor.bottom - mi.rcMonitor.top,
@@ -288,6 +366,8 @@ eEventHandled FullscreenHandler(HWND hwnd, WPARAM wParam)
 
 		// and hide mouse cursor
 		ShowCursor(false);
+		ShowWindow(hwnd, SW_SHOW);
+		GetCursorPos(&me->lastMousePos);
 		me->isFullscreen = true;
 	}
 	else
@@ -297,10 +377,41 @@ eEventHandled FullscreenHandler(HWND hwnd, WPARAM wParam)
 					 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
 						 SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
 		ShowCursor(true);
+		ShowWindow(hwnd, SW_HIDE);
 		me->isFullscreen = false;
 	}
 
 	return eehHandled;
+}
+
+INT_PTR CALLBACK SettingsDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+	static OledSaverWinState* state = nullptr;
+	switch (message) {
+	case WM_INITDIALOG:
+		state = (OledSaverWinState*)lParam;
+		if (state) {
+			SetDlgItemInt(hDlg, IDC_IDLE_TIME, state->idleTimeoutSeconds, FALSE);
+			SetDlgItemInt(hDlg, IDC_DIM_PERCENT, state->dimPercentage, FALSE);
+			CheckDlgButton(hDlg, IDC_AUTOSTART, state->autostart ? BST_CHECKED : BST_UNCHECKED);
+		}
+		return (INT_PTR)TRUE;
+	case WM_COMMAND:
+		if (LOWORD(wParam) == IDOK && state) {
+			state->idleTimeoutSeconds = GetDlgItemInt(hDlg, IDC_IDLE_TIME, NULL, FALSE);
+			state->dimPercentage = GetDlgItemInt(hDlg, IDC_DIM_PERCENT, NULL, FALSE);
+			state->autostart = (IsDlgButtonChecked(hDlg, IDC_AUTOSTART) == BST_CHECKED);
+			SaveSettings(state);
+			UpdateAutostart(state->autostart);
+			ApplyDimSettings(GetParent(hDlg), state);
+			EndDialog(hDlg, LOWORD(wParam));
+			return (INT_PTR)TRUE;
+		} else if (LOWORD(wParam) == IDCANCEL) {
+			EndDialog(hDlg, LOWORD(wParam));
+			return (INT_PTR)TRUE;
+		}
+		break;
+	}
+	return (INT_PTR)FALSE;
 }
 
 void ContextMenuHandler(HWND hWnd, LPARAM lParam)
@@ -314,7 +425,8 @@ void ContextMenuHandler(HWND hWnd, LPARAM lParam)
 	bool isFullscreen = me && me->isFullscreen;
 	AppendMenu(hMenu, MF_STRING | (isFullscreen ? MF_CHECKED : MF_UNCHECKED), IDM_FULLSCREEN, L"Fullscreen\tEnter");
 	AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-	AppendMenu(hMenu, MF_STRING, IDM_MINIMIZE, L"Minimize\tEscape");
+	AppendMenu(hMenu, MF_STRING, IDM_SETTINGS, L"Settings...");
+	AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 	AppendMenu(hMenu, MF_STRING, IDM_DISPLAYOFF, L"Display Off\tPgDn");
 	AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 	AppendMenu(hMenu, MF_STRING, IDM_NO_SLEEP, L"No Sleep Timeout 30m");
@@ -352,9 +464,8 @@ void ContextMenuHandler(HWND hWnd, LPARAM lParam)
 		FullscreenHandler(hWnd, VK_RETURN);
 		break;
 
-	case IDM_MINIMIZE:
-		// Minimize window
-		ShowWindow(hWnd, SW_MINIMIZE);
+	case IDM_SETTINGS:
+		DialogBoxParam(hInst, MAKEINTRESOURCE(IDD_SETTINGS), hWnd, SettingsDialogProc, (LPARAM)me);
 		break;
 
 	case IDM_DISPLAYOFF:
@@ -385,16 +496,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 	switch (message)
 	{
+	case WM_TRAYICON:
+		if (lParam == WM_RBUTTONUP || lParam == WM_LBUTTONUP) {
+			POINT pt;
+			GetCursorPos(&pt);
+			SetForegroundWindow(hWnd);
+			ContextMenuHandler(hWnd, MAKELPARAM(pt.x, pt.y));
+			PostMessage(hWnd, WM_NULL, 0, 0);
+		}
+		break;
 	case WM_LBUTTONDBLCLK:
 		FullscreenHandler(hWnd, VK_RETURN); // emulate enter hit
 		break;
 	case WM_KEYDOWN:
+	{
+		OledSaverWinState *me = (OledSaverWinState *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+		if (me && me->isFullscreen && wParam != VK_ESCAPE && wParam != VK_RETURN) {
+			FullscreenHandler(hWnd, VK_RETURN);
+		}
 		if (eehHandled == FullscreenHandler(hWnd, wParam))
 		{
 			DragHandler(hWnd, dreStop);
 			ResizeHandler(hWnd, dreStop);
 		}
 		break;
+	}
 	case WM_LBUTTONDOWN:
 		SetCapture(hWnd);
 		if(eehHandled != DragHandler(hWnd, dreStart))
@@ -414,9 +540,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		ResizeHandler(hWnd, dreStop);
 		break;
 	case WM_MOUSEMOVE:
-		DragHandler(hWnd, dreMove);
-		ResizeHandler(hWnd, dreMove);
+	{
+		OledSaverWinState *me = (OledSaverWinState *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+		if (me && me->isFullscreen) {
+			POINT pt;
+			GetCursorPos(&pt);
+			int dx = pt.x - me->lastMousePos.x;
+			int dy = pt.y - me->lastMousePos.y;
+			if (dx*dx + dy*dy > 25) { // move more than 5 pixels
+				FullscreenHandler(hWnd, VK_RETURN);
+			}
+		} else {
+			DragHandler(hWnd, dreMove);
+			ResizeHandler(hWnd, dreMove);
+		}
 		break;
+	}
 	case WM_CONTEXTMENU:
 		ContextMenuHandler(hWnd, lParam);
 		break;
@@ -444,6 +583,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				}
 			}
 		}
+		else if (wParam == nIdIdleTimer)
+		{
+			OledSaverWinState *me = (OledSaverWinState *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+			if (me && me->idleTimeoutSeconds > 0 && !me->isFullscreen)
+			{
+				LASTINPUTINFO lii;
+				lii.cbSize = sizeof(LASTINPUTINFO);
+				if (GetLastInputInfo(&lii))
+				{
+					DWORD idleTimeMs = GetTickCount() - lii.dwTime;
+					if (idleTimeMs > (DWORD)(me->idleTimeoutSeconds * 1000))
+					{
+						FullscreenHandler(hWnd, VK_RETURN);
+					}
+				}
+			}
+		}
 	}
 	case WM_PAINT:
 		hdc = BeginPaint(hWnd, &ps);
@@ -451,6 +607,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		EndPaint(hWnd, &ps);
 		break;
 	case WM_DESTROY:
+		Shell_NotifyIcon(NIM_DELETE, &nid);
 		PostQuitMessage(0);
 		break;
 	default:
