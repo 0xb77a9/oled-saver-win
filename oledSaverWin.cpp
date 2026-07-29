@@ -17,6 +17,7 @@
 #include <shellapi.h>
 
 #include "resource.h"
+#include <powrprof.h>
 
 #ifndef GET_X_LPARAM
 #define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
@@ -52,6 +53,8 @@ struct OledSaverWinState
 	int dimPercentage{95};
 	bool autostart{false};
 	POINT lastMousePos{};
+	int displayOffTimeoutSeconds{0};
+	bool displayOffTriggered{false};
 };
 
 void LoadSettings(OledSaverWinState* state) {
@@ -64,6 +67,9 @@ void LoadSettings(OledSaverWinState* state) {
 		}
 		if (RegGetValue(hKey, NULL, L"DimPercentage", RRF_RT_REG_DWORD, NULL, &value, &dataSize) == ERROR_SUCCESS) {
 			state->dimPercentage = value;
+		}
+		if (RegGetValue(hKey, NULL, L"DisplayOffTimeoutSeconds", RRF_RT_REG_DWORD, NULL, &value, &dataSize) == ERROR_SUCCESS) {
+			state->displayOffTimeoutSeconds = value;
 		}
 		RegCloseKey(hKey);
 	}
@@ -102,6 +108,8 @@ void SaveSettings(OledSaverWinState* state) {
 		RegSetValueEx(hKey, L"IdleTimeoutSeconds", 0, REG_DWORD, (const BYTE*)&value, sizeof(DWORD));
 		value = state->dimPercentage;
 		RegSetValueEx(hKey, L"DimPercentage", 0, REG_DWORD, (const BYTE*)&value, sizeof(DWORD));
+		value = state->displayOffTimeoutSeconds;
+		RegSetValueEx(hKey, L"DisplayOffTimeoutSeconds", 0, REG_DWORD, (const BYTE*)&value, sizeof(DWORD));
 		RegCloseKey(hKey);
 	}
 }
@@ -111,6 +119,14 @@ void ApplyDimSettings(HWND hWnd, OledSaverWinState* state) {
 	if (alpha < 0) alpha = 0;
 	if (alpha > 255) alpha = 255;
 	SetLayeredWindowAttributes(hWnd, 0, alpha, LWA_ALPHA);
+}
+
+bool IsDisplayRequiredBySystem() {
+	ULONG execState = 0;
+	if (CallNtPowerInformation(SystemExecutionState, NULL, 0, &execState, sizeof(execState)) == 0) { // STATUS_SUCCESS is 0
+		return (execState & ES_DISPLAY_REQUIRED) != 0;
+	}
+	return false;
 }
 
 // Forward declarations of functions included in this code module:
@@ -392,6 +408,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		if (state) {
 			SetDlgItemInt(hDlg, IDC_IDLE_TIME, state->idleTimeoutSeconds, FALSE);
 			SetDlgItemInt(hDlg, IDC_DIM_PERCENT, state->dimPercentage, FALSE);
+			SetDlgItemInt(hDlg, IDC_DISPLAYOFF_TIME, state->displayOffTimeoutSeconds, FALSE);
 			CheckDlgButton(hDlg, IDC_AUTOSTART, state->autostart ? BST_CHECKED : BST_UNCHECKED);
 		}
 		return (INT_PTR)TRUE;
@@ -399,6 +416,7 @@ INT_PTR CALLBACK SettingsDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		if (LOWORD(wParam) == IDOK && state) {
 			state->idleTimeoutSeconds = GetDlgItemInt(hDlg, IDC_IDLE_TIME, NULL, FALSE);
 			state->dimPercentage = GetDlgItemInt(hDlg, IDC_DIM_PERCENT, NULL, FALSE);
+			state->displayOffTimeoutSeconds = GetDlgItemInt(hDlg, IDC_DISPLAYOFF_TIME, NULL, FALSE);
 			state->autostart = (IsDlgButtonChecked(hDlg, IDC_AUTOSTART) == BST_CHECKED);
 			SaveSettings(state);
 			UpdateAutostart(state->autostart);
@@ -586,16 +604,34 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		else if (wParam == nIdIdleTimer)
 		{
 			OledSaverWinState *me = (OledSaverWinState *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
-			if (me && me->idleTimeoutSeconds > 0 && !me->isFullscreen)
+			if (me)
 			{
 				LASTINPUTINFO lii;
 				lii.cbSize = sizeof(LASTINPUTINFO);
 				if (GetLastInputInfo(&lii))
 				{
 					DWORD idleTimeMs = GetTickCount() - lii.dwTime;
-					if (idleTimeMs > (DWORD)(me->idleTimeoutSeconds * 1000))
+					
+					if (idleTimeMs < 1000) {
+						me->displayOffTriggered = false;
+						if (me->isFullscreen) {
+							FullscreenHandler(hWnd, VK_RETURN);
+						}
+					}
+
+					if (me->idleTimeoutSeconds > 0 && !me->isFullscreen && idleTimeMs > (DWORD)(me->idleTimeoutSeconds * 1000))
 					{
-						FullscreenHandler(hWnd, VK_RETURN);
+						if (!IsDisplayRequiredBySystem()) {
+							FullscreenHandler(hWnd, VK_RETURN);
+						}
+					}
+
+					if (me->displayOffTimeoutSeconds > 0 && !me->displayOffTriggered && idleTimeMs > (DWORD)(me->displayOffTimeoutSeconds * 1000))
+					{
+						if (!IsDisplayRequiredBySystem()) {
+							PostMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+							me->displayOffTriggered = true;
+						}
 					}
 				}
 			}

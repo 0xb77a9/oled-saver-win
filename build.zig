@@ -29,6 +29,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("gdi32", .{});
     exe.root_module.linkSystemLibrary("advapi32", .{});
     exe.root_module.linkSystemLibrary("shell32", .{});
+    exe.root_module.linkSystemLibrary("powrprof", .{});
 
     exe.root_module.addCSourceFiles(.{
         .files = &.{
